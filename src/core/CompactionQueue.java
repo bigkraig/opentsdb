@@ -80,9 +80,7 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
     this.tsdb = tsdb;
     metric_width = tsdb.metrics.width();
     if (TSDB.enable_compactions) {
-      final Thrd thread = new Thrd();
-      thread.setDaemon(true);
-      thread.start();
+      startCompactionThread();
     }
   }
 
@@ -98,14 +96,19 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
   }
 
   /**
-   * Forces a flush of the entire compaction queue.
+   * Forces a flush of the all old entries in the compaction queue.
    * @return A deferred that will be called back once everything has been
    * flushed (or something failed, in which case the deferred will carry the
    * exception).  In case of success, the kind of object returned is
    * unspecified.
    */
   public Deferred<ArrayList<Object>> flush() {
-    return flush(0, Integer.MAX_VALUE);
+    final int size = size();
+    if (size > 0) {
+      LOG.info("Flushing all old outstanding rows out of " + size + " rows");
+    }
+    final long now = System.currentTimeMillis();
+    return flush(now / 1000 - Const.MAX_TIMESPAN - 1, Integer.MAX_VALUE);
   }
 
   /**
@@ -138,19 +141,25 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
    */
   private Deferred<ArrayList<Object>> flush(final long cut_off, int maxflushes) {
     assert maxflushes > 0: "maxflushes must be > 0, but I got " + maxflushes;
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("flush(), cut_off = " + cut_off);
-    }
     // We can't possibly flush more entries than size().
     maxflushes = Math.min(maxflushes, size());
+    if (maxflushes == 0) {  // Because size() might be 0.
+      return Deferred.fromResult(new ArrayList<Object>(0));
+    }
     final ArrayList<Deferred<Object>> ds =
-      new ArrayList<Deferred<Object>>(maxflushes);
+      new ArrayList<Deferred<Object>>(Math.min(maxflushes,
+                                               MAX_CONCURRENT_FLUSHES));
+    int nflushes = 0;
     for (final byte[] row : this.keySet()) {
-      if (maxflushes-- == 0) {
+      if (maxflushes == 0) {
         break;
       }
       final long base_time = Bytes.getUnsignedInt(row, metric_width);
       if (base_time > cut_off) {
+        break;
+      } else if (nflushes == MAX_CONCURRENT_FLUSHES) {
+        // We kicked off the compaction of too many rows already, let's wait
+        // until they're done before kicking off more.
         break;
       }
       // You'd think that it would be faster to grab an iterator on the map
@@ -160,10 +169,30 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
       if (super.remove(row) == null) {  // We didn't remove anything.
         continue;  // So someone else already took care of this entry.
       }
+      nflushes++;
+      maxflushes--;
       size.decrementAndGet();
       ds.add(tsdb.get(row).addCallbacks(compactcb, handle_read_error));
     }
-    return Deferred.group(ds);
+    final Deferred<ArrayList<Object>> group = Deferred.group(ds);
+    if (nflushes == MAX_CONCURRENT_FLUSHES && maxflushes > 0) {
+      // We're not done yet.  Once this group of flushes completes, we need
+      // to kick off more.
+      tsdb.flush();  // Speed up this batch by telling the client to flush.
+      final int maxflushez = maxflushes;  // Make it final for closure.
+      final class FlushMoreCB implements Callback<Deferred<ArrayList<Object>>,
+                                                  ArrayList<Object>> {
+        public Deferred<ArrayList<Object>> call(final ArrayList<Object> arg) {
+          return flush(cut_off, maxflushez);
+        }
+        public String toString() {
+          return "Continue flushing with cut_off=" + cut_off
+            + ", maxflushes=" + maxflushez;
+        }
+      }
+      group.addCallbackDeferring(new FlushMoreCB());
+    }
+    return group;
   }
 
   private final CompactCB compactcb = new CompactCB();
@@ -751,6 +780,13 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
 
   static final long serialVersionUID = 1307386642;
 
+  /** Starts a compaction thread.  Only one such thread is needed.  */
+  private void startCompactionThread() {
+    final Thrd thread = new Thrd();
+    thread.setDaemon(true);
+    thread.start();
+  }
+
   /** How frequently the compaction thread wakes up flush stuff.  */
   // TODO(tsuna): Make configurable?
   private static final int FLUSH_INTERVAL = 10;  // seconds
@@ -758,6 +794,10 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
   /** Minimum number of rows we'll attempt to compact at once.  */
   // TODO(tsuna): Make configurable?
   private static final int MIN_FLUSH_THRESHOLD = 100;  // rows
+
+  /** Maximum number of rows we'll compact concurrently.  */
+  // TODO(tsuna): Make configurable?
+  private static final int MAX_CONCURRENT_FLUSHES = 10000;  // rows
 
   /** If this is X then we'll flush X times faster than we really need.  */
   // TODO(tsuna): Make configurable?
@@ -802,13 +842,38 @@ final class CompactionQueue extends ConcurrentSkipListMap<byte[], Boolean> {
               || size > maxflushes) {                // (2)
             flush(now / 1000 - Const.MAX_TIMESPAN - 1, maxflushes);
             if (LOG.isDebugEnabled()) {
-              LOG.debug("flush() of max " + maxflushes + '/' + size
-                        + " rows took " + (System.currentTimeMillis() - now)
-                        + "ms, queue size=" + size());
+              final int newsize = size();
+              LOG.debug("flush() took " + (System.currentTimeMillis() - now)
+                        + "ms, new queue size=" + newsize
+                        + " (" + (newsize - size) + ')');
             }
           }
         } catch (Exception e) {
           LOG.error("Uncaught exception in compaction thread", e);
+        } catch (OutOfMemoryError e) {
+          // Let's free up some memory by throwing away the compaction queue.
+          final int sz = size.get();
+          CompactionQueue.super.clear();
+          size.set(0);
+          LOG.error("Discarded the compaction queue, size=" + sz, e);
+        } catch (Throwable e) {
+          LOG.error("Uncaught *Throwable* in compaction thread", e);
+          // Catching this kind of error is totally unexpected and is really
+          // bad.  If we do nothing and let this thread die, we'll run out of
+          // memory as new entries are added to the queue.  We could always
+          // commit suicide, but it's kind of drastic and nothing else in the
+          // code does this.  If `enable_compactions' wasn't final, we could
+          // always set it to false, but that's not an option.  So in order to
+          // try to get a fresh start, let this compaction thread terminate
+          // and spin off a new one instead.
+          try {
+            Thread.sleep(1000);  // Avoid busy looping creating new threads.
+          } catch (InterruptedException i) {
+            LOG.error("Compaction thread interrupted in error handling", i);
+            return;  // Don't flush, we're truly hopeless.
+          }
+          startCompactionThread();
+          return;
         }
         try {
           Thread.sleep(FLUSH_INTERVAL * 1000);
