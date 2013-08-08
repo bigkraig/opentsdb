@@ -114,7 +114,7 @@ public class QueryUi implements EntryPoint, HistoryListener {
   private final CheckBox y2log = new CheckBox();
   private final TextBox ylabel = new TextBox();
   private final TextBox y2label = new TextBox();
-  private final CheckBox simplekey = new CheckBox();
+  private final CheckBox simplekey = new CheckBox("Simplify");
   private final TextBox simplekeyValue = new TextBox();
   private final ValidatedTextBox yformat = new ValidatedTextBox();
   private final ValidatedTextBox y2format = new ValidatedTextBox();
@@ -565,11 +565,10 @@ public class QueryUi implements EntryPoint, HistoryListener {
     keybox.setValue(true);
     vbox.add(keybox);
     vbox.add(nokey);
-    final Grid simplekeyGrid = new Grid(1, 3);
-    simplekeyGrid.setWidget(0, 0, simplekey);
-    simplekeyGrid.setText(0, 1, "Simplify");
-    simplekeyGrid.setWidget(0, 2, simplekeyValue);
-    vbox.add(simplekeyGrid);
+    final HorizontalPanel hbox = new HorizontalPanel();
+    hbox.add(simplekey);
+    hbox.add(simplekeyValue);
+    vbox.add(hbox);
     return vbox;
   }
 
