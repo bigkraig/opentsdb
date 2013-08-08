@@ -169,7 +169,7 @@ final class MetricForm extends HorizontalPanel implements Focusable {
     this.rate_counter.setValue(rate_options.is_counter, false);
     final long rate_counter_max = rate_options.counter_max;
     this.counter_max.setValue(
-        rate_counter_max == Long.MAX_VALUE ? "" : Long.toString(rate_counter_max), 
+        rate_counter_max == Long.MAX_VALUE ? "" : Long.toString(rate_counter_max),
         false);
     this.counter_reset_value
         .setValue(Long.toString(rate_options.reset_value), false);
@@ -538,7 +538,7 @@ final class MetricForm extends HorizontalPanel implements Focusable {
     public long counter_max = Long.MAX_VALUE;
     public long reset_value = 0;
   }
-  
+
   /**
    * Parses the "rate" section of the query string and returns an instance
    * of the LocalRateOptions class that contains the values found.
@@ -575,7 +575,7 @@ final class MetricForm extends HorizontalPanel implements Focusable {
       return new LocalRateOptions();
     }
   }
-  
+
   // ------------------- //
   // Focusable interface //
   // ------------------- //

@@ -114,6 +114,8 @@ public class QueryUi implements EntryPoint, HistoryListener {
   private final CheckBox y2log = new CheckBox();
   private final TextBox ylabel = new TextBox();
   private final TextBox y2label = new TextBox();
+  private final CheckBox simplekey = new CheckBox();
+  private final TextBox simplekeyValue = new TextBox();
   private final ValidatedTextBox yformat = new ValidatedTextBox();
   private final ValidatedTextBox y2format = new ValidatedTextBox();
   private final ValidatedTextBox wxh = new ValidatedTextBox();
@@ -260,6 +262,10 @@ public class QueryUi implements EntryPoint, HistoryListener {
     keybox.addClickHandler(refreshgraph);
     nokey.addClickHandler(refreshgraph);
     smooth.addClickHandler(refreshgraph);
+    simplekey.addClickHandler(refreshgraph);
+    simplekeyValue.addBlurHandler(refreshgraph);
+    simplekeyValue.addKeyPressHandler(refreshgraph);
+
 
     yrange.setValidationRegexp("^("                            // Nothing or
                                + "|\\[([-+.0-9eE]+|\\*)?"      // "[start
@@ -559,6 +565,11 @@ public class QueryUi implements EntryPoint, HistoryListener {
     keybox.setValue(true);
     vbox.add(keybox);
     vbox.add(nokey);
+    final Grid simplekeyGrid = new Grid(1, 3);
+    simplekeyGrid.setWidget(0, 0, simplekey);
+    simplekeyGrid.setText(0, 1, "Simplify");
+    simplekeyGrid.setWidget(0, 2, simplekeyValue);
+    vbox.add(simplekeyGrid);
     return vbox;
   }
 
@@ -596,7 +607,7 @@ public class QueryUi implements EntryPoint, HistoryListener {
         final JSONString repo = bd.get("repo").isString();
         final JSONString version = bd.get("version").isString();
         build_data.setHTML(
-          "OpenTSDB version [" + version.stringValue() + "] built from revision " 
+          "OpenTSDB version [" + version.stringValue() + "] built from revision "
           + shortrev.stringValue()
           + " in a " + status.stringValue() + " state<br/>"
           + "Built on " + new Date((Long.parseLong(stamp.stringValue()) * 1000))
@@ -748,6 +759,8 @@ public class QueryUi implements EntryPoint, HistoryListener {
     maybeSetTextbox(qs, "start", start_datebox.getTextBox());
     maybeSetTextbox(qs, "end", end_datebox.getTextBox());
     setTextbox(qs, "wxh", wxh);
+    simplekey.setValue(qs.containsKey("simplekey"), true);
+    setTextbox(qs, "simplekey", simplekeyValue);
     autoreload.setValue(qs.containsKey("autoreload"), true);
     maybeSetTextbox(qs, "autoreload", autoreoload_interval);
 
@@ -878,6 +891,9 @@ public class QueryUi implements EntryPoint, HistoryListener {
     url.append("&wxh=").append(wxh.getText());
     if (smooth.getValue()) {
       url.append("&smooth=csplines");
+    }
+    if (simplekey.getValue()) {
+      url.append("&simplekey=" + simplekeyValue.getText());
     }
     final String unencodedUri = url.toString();
     final String uri = URL.encode(unencodedUri);

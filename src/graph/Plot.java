@@ -15,10 +15,14 @@ package net.opentsdb.graph;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,7 +59,7 @@ public final class Plot {
 
   /** List of global annotations */
   private List<Annotation> globals = null;
-  
+
   /** Per-DataPoints Gnuplot options. */
   private ArrayList<String> options = new ArrayList<String>();
 
@@ -155,7 +159,7 @@ public final class Plot {
   public void setGlobals(final List<Annotation> globals) {
     this.globals = globals;
   }
-  
+
   /**
    * Adds some data points to this plot.
    * @param datapoints The data points to plot.
@@ -247,7 +251,7 @@ public final class Plot {
     final PrintWriter gp = new PrintWriter(script_path);
     try {
       // XXX don't hardcode all those settings.  At least not like that.
-      gp.append("set term png small size ")
+      gp.append("set term png truecolor nocrop noenhanced small size ")
         // Why the fuck didn't they also add methods for numbers?
         .append(Short.toString(width)).append(",")
         .append(Short.toString(height));
@@ -302,6 +306,10 @@ public final class Plot {
         for (final Map.Entry<String, String> entry : params.entrySet()) {
           final String key = entry.getKey();
           final String value = entry.getValue();
+          if (key.equals("simplekey")) {
+            // We don't want to pass this down to gnuplot but we do want to use it when generating the key
+            continue;
+          }
           if (value != null) {
             gp.append("set ").append(key)
               .append(' ').append(value).write('\n');
@@ -317,7 +325,7 @@ public final class Plot {
           break;
         }
       }
-      
+
       // compile annotations to determine if we have any to graph
       final List<Annotation> notes = new ArrayList<Annotation>();
       for (int i = 0; i < nseries; i++) {
@@ -342,13 +350,65 @@ public final class Plot {
           gp.append("\")), char 1 front fc rgbcolor \"white\"\n");
           gp.append("set label \"").append(value).append("\" at \"");
           gp.append(ts).append("\", graph 0 front center\n");
-        } 
+        }
+      }
+
+      // when we simplekey; run once through to find repeated tags and if we are plotting a single metric
+      // prunedTags is a map that contains a count of "key=value" of tags and the count of metrics used.
+      Pattern p = Pattern.compile("(.*)\\{(.*)\\}");
+      Map<String, Integer> prunedTags = new HashMap<String, Integer>();
+      if (params.containsKey("simplekey")) {
+        for (int i = 0; i < nseries; i++) {
+          final DataPoints dp = datapoints.get(i);
+          final Map<String, String> tags = dp.getTags();
+            for (Object key: tags.keySet()) {
+              final String combinedKey = key.toString() + "=" + tags.get(key).toString();
+              prunedTags.put(combinedKey, prunedTags.containsKey(combinedKey) ? prunedTags.get(combinedKey) + 1 : 1);
+            }
+            prunedTags.put(dp.metricName(), prunedTags.containsKey(dp.metricName()) ? prunedTags.get(dp.metricName()) + 1 : 1);
+          }
       }
 
       gp.write("plot ");
       for (int i = 0; i < nseries; i++) {
         final DataPoints dp = datapoints.get(i);
-        final String title = dp.metricName() + dp.getTags();
+//        final String title = dp.metricName() + dp.getTags();
+        StringBuilder title = new StringBuilder();
+        String metricName = new String();
+
+        if (params.containsKey("simplekey")) {
+          final Map<String, String> tags = new HashMap<String, String>();
+
+          metricName = dp.metricName();
+          for (Map.Entry<String, String> e : dp.getTags().entrySet()) {
+            final String combinedKey = e.getKey().toString() + "=" + e.getValue().toString();
+            if (prunedTags.get(combinedKey) != nseries)
+              tags.put(e.getKey(), e.getValue());
+          }
+
+          // When multiple metrics are plotted put the metric name before the tag list, otherwise we do not show the metric name
+          if (prunedTags.get(metricName) != nseries)
+            title.append(metricName + ": ");
+
+          final List<String> stripKeys = Arrays.asList(params.get("simplekey").split("\\|"));
+
+          // Create the legend title, if a tag key is supplied to simplekey prefixed with -, we do not include it in the title.
+          // If the tag key is supplied to simplekey without a - prefix, we remove the tag key from the title but still include the tag value
+          String delim = "";
+          for (Map.Entry<String, String> e : tags.entrySet()) {
+            if (stripKeys.contains("-" + e.getKey()))
+              continue;
+            if (stripKeys.contains(e.getKey()))
+              title.append(delim).append(e.getValue());
+           else
+              title.append(delim).append(e.getKey() + "=" + e.getValue());
+           delim = ", ";
+          }
+
+        } else {
+          title.append(dp.metricName() + dp.getTags().toString());
+        }
+
         gp.append(" \"").append(datafiles[i]).append("\" using 1:2");
         if (smooth != null) {
           gp.append(" smooth ").append(smooth);
